@@ -2,6 +2,7 @@ package awss3;
 
 import com.amazonaws.auth.AWSStaticCredentialsProvider;
 import com.amazonaws.auth.BasicAWSCredentials;
+import com.amazonaws.auth.DefaultAWSCredentialsProviderChain;
 import com.amazonaws.regions.Regions;
 import com.amazonaws.services.s3.AmazonS3;
 import com.amazonaws.services.s3.AmazonS3ClientBuilder;
@@ -9,6 +10,9 @@ import com.amazonaws.services.s3.model.Bucket;
 import com.amazonaws.services.s3.model.ObjectListing;
 import com.amazonaws.services.s3.model.S3Object;
 import com.amazonaws.services.s3.model.S3ObjectInputStream;
+import com.amazonaws.services.s3.transfer.MultipleFileUpload;
+import com.amazonaws.services.s3.transfer.TransferManager;
+import com.amazonaws.services.s3.transfer.TransferManagerBuilder;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
@@ -25,23 +29,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  */
 public class S3Client {
-    private static final String accessKey = "QUtJQUpSR0sySFc0RlFXN0JOSVE=";
-    private static final String secretKey = "dGxRZVUxQkJXNm1XcWpLT3JwOXlCT2tValhTejlXTHFZOVIwamppNg==";
-    private final BasicAWSCredentials credentials =
-            new BasicAWSCredentials(
-                    new String(Base64.getDecoder().decode(accessKey)),
-                    new String(Base64.getDecoder().decode(secretKey))
-            );
+    private Regions clientRegion = Regions.US_WEST_2;
     private final AmazonS3 client;
     private String bucketName;
 
     public S3Client(String bucketName) {
-        client = AmazonS3ClientBuilder
-                .standard()
-                .withCredentials(new AWSStaticCredentialsProvider(credentials))
-                .withRegion(Regions.US_WEST_1)
-                .build();
-
+            client = AmazonS3ClientBuilder.standard()
+                    .withCredentials( DefaultAWSCredentialsProviderChain.getInstance())
+                    .withRegion(this.clientRegion)
+                    .build();
 
         setBucket(bucketName);
         if ( !client.doesBucketExist(getBucketName())) {
@@ -49,6 +45,36 @@ public class S3Client {
         }
     }
 
+    /**
+     * Most basic form of authentication.  This will likely never be used, as it is unsecure and terrible security.
+     *
+     * @param bucketName
+     * @param credentials
+     */
+    public S3Client(String bucketName, BasicAWSCredentials credentials) {
+        client = AmazonS3ClientBuilder.standard()
+                .withCredentials(new AWSStaticCredentialsProvider(credentials))
+                .withRegion(this.clientRegion)
+                .build();
+
+        setBucket(bucketName);
+        if ( !client.doesBucketExist(getBucketName())) {
+            print("Bucket needs creation before additional methods can be called.");
+        }
+    }
+
+    public S3Client(String bucketName, BasicAWSCredentials credentials, Regions region) {
+        this.clientRegion = region;
+        client = AmazonS3ClientBuilder.standard()
+                .withCredentials(new AWSStaticCredentialsProvider(credentials))
+                .withRegion(this.clientRegion)
+                .build();
+
+        setBucket(bucketName);
+        if ( !client.doesBucketExist(getBucketName())) {
+            print("Bucket needs creation before additional methods can be called.");
+        }
+    }
     /**
      * Returns the stored reference name.
      *
@@ -114,6 +140,8 @@ public class S3Client {
                     .filter(bucket -> bucket.getName().equals(bucketName))
                     .collect(Collectors.toList());
 
+            assertTrue(returnBucket.size() > 0,
+                    "Expected at least one bucket!");
             assertTrue(returnBucket.size() == 1,
                     "Unexpected bucket list size!");
             assertTrue(returnBucket.get(0).getName().equals(bucketName),
@@ -125,12 +153,61 @@ public class S3Client {
         }
 
         setBucket(client.createBucket(bucketName).getName());
-
         return this;
     }
 
-    public void copyFileToBucket(String target, File resource) {
-        client.putObject(getBucketName(), target, resource);
+    /**
+     * Copies a file to a specified target directory.
+     *
+     * @param targetDirectory
+     * @param resource
+     */
+    public void copyFileTo(String targetDirectory, File resource) {
+        client.putObject(getBucketName(), targetDirectory, resource);
+    }
+
+    /**
+     * Creates a directory in the root of the s3 bucket, and uploads all the files and subfolders.
+     *
+     * @param localDirectory - the
+     *
+     */
+    public void copyDirectoryTo(File localDirectory) {
+        copyDirectoryTo(localDirectory.getName(), localDirectory);
+    }
+
+    /**
+     * Copies a directory to a target directory.
+     * Ex. Usage:
+     *
+     * s3.copyDirectoryTo(
+     *                 "Documents/" + directoryToTransfer,
+     *                 new File(getClass().getResource("/" + directoryToTransfer).toURI())
+     *         );
+     * @param targetDirectory
+     * @param directoryToTransfer
+     */
+    public void copyDirectoryTo(String targetDirectory, File directoryToTransfer) {
+        TransferManager xfer_mgr = TransferManagerBuilder.standard().withS3Client(client).build();
+
+        assertTrue(
+                directoryToTransfer.exists(),
+                "Local directory does not exist.  Only valid directories may be " +
+                        "uploaded to s3."
+        );
+
+        MultipleFileUpload xfer = xfer_mgr.uploadDirectory(
+                getBucketName(),
+                targetDirectory,
+                directoryToTransfer,
+                true
+        );
+
+        try {
+            xfer.waitForCompletion();
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
     }
 
     /**
@@ -142,6 +219,10 @@ public class S3Client {
         getClient().deleteObject(getBucketName(), target);
     }
 
+    /**
+     * Lists all the objects within a bucket.
+     * @return
+     */
     public ObjectListing listObjects() {
         return getClient().listObjects(getBucketName());
     }
